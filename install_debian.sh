@@ -1,4 +1,4 @@
-#!/bin/bash
+#/bin/bash
 
 sudo aptitude install libopusfile-dev opus-tools libopus-dev libortp-dev libclalsadrv-dev
 
