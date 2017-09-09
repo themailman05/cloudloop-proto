@@ -12,9 +12,9 @@ CloudLoop uber-beta
 import pyaudio
 import wave
 
-CHUNK = 1024
+CHUNK = 512
 FORMAT = pyaudio.paInt16
-CHANNELS = 2
+CHANNELS = 1 
 RATE = 44100
 LOOP_TIME = 3
 WAVE_OUTPUT_FILENAME = "output.wav"
@@ -30,6 +30,7 @@ def loop_record(click=False, framebuffer=[], beats_per_measure=4, measures=1, bp
                     channels=CHANNELS,
                     rate=RATE,
                     input=True,
+                    input_device_index=2,
                     output=True,
                     frames_per_buffer=CHUNK)
 
@@ -46,8 +47,9 @@ def loop_record(click=False, framebuffer=[], beats_per_measure=4, measures=1, bp
         print(str(click_len) + " frames in click")
         click_stream = p.open(format=p.get_format_from_width(click_wav.getsampwidth()),
                               channels=click_wav.getnchannels(),
-                              rate=click_wav.getframerate(),
-                              output=True)
+                              rate=RATE,
+                              output=True,
+                              output_device_index=2)
         print(str(click_wav.getframerate()) + " sample rate")
         click_data = click_wav.readframes(CHUNK)
 
