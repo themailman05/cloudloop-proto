@@ -140,8 +140,7 @@ class AudioTrack:
             print('Playing loop.')
             def playback_callback(input_data, frame_count, time_info, status):
                 print(f'callback for stream playback {frame_count} {time_info} {status}')
-                data = frameGen.__next__()
-                print(data)
+                data = next(frameGen)
                 return data, pyaudio.paContinue
             self.output_stream = p.open(format=FORMAT,
                                         channels=CHANNELS,
@@ -168,12 +167,11 @@ class Loop:
         self.current_frame_chunk = 0
     def frame_generator(self):
         print(self.num_frame_chunks)
-        if (self.current_frame_chunk < self.num_frame_chunks):
+        while (self.current_frame_chunk < self.num_frame_chunks):
             yield self.framebuffer[self.current_frame_chunk]
             self.current_frame_chunk += 1
     def dump(self, file_name='recording.wav'):
         wav_bytes = b''.join(self.framebuffer)
-        print(type(wav_bytes))
         with wave.open(file_name, 'wb') as f:
             f.setframerate(self.sample_rate)
             f.setsampwidth(3) #24 bit = 3 bytes
@@ -200,7 +198,6 @@ audio_thread.join()
 audio_playback_thread = multiprocessing.Process(target=audio_track.play(1))
 audio_playback_thread.start()
 audio_playback_thread.join()
-
 
 
 #frames = loop_record(click=True, bpm=100.0, input_channel=input_channel, output_channel=output_channel, sample_rate=sample_rate)
