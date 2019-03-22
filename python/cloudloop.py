@@ -1,6 +1,6 @@
 """ 
-CloudLoop uber-beta
-(c) Liam Sargent, 2017
+CloudLoop POC
+(c) Liam Sargent, Zip Technologies LLC 2019
 """
 
 #TODO True looping (add wavs to each other)
