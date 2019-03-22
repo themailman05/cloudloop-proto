@@ -13,11 +13,13 @@ import pyaudio
 import wave
 import pprint
 import time
-from multiprocessing import Process, Pipe
+from threading import Thread
 import io
 import termios, sys
+from decimal import *
+import asyncio
 
-CHUNK = 512
+CHUNK = 128
 FORMAT = pyaudio.paInt16
 CHANNELS = 1
 RATE = 48000
@@ -49,9 +51,10 @@ def configure(mode='auto'):
     print(f'Output Channel: {output_channel}')
     return (input_channel, output_channel, sample_rate)
 
-class ClickTrack:
+class ClickTrack(Thread):
     'Click Track'
-    def __init__(self, click_sound_file='metsound.wav', output_channel=0, buffer_size=CHUNK):
+    def __init__(self, click_sound_file='metsound.wav', output_channel=0, buffer_size=CHUNK, countin=True):
+        super(ClickTrack, self).__init__()
         self.click_sound_file = click_sound_file
         self.click_wav = wave.open(self.click_sound_file)
         self.click_sample_rate = self.click_wav.getframerate()
@@ -60,20 +63,22 @@ class ClickTrack:
         self.click_format = p.get_format_from_width(self.click_wav.getsampwidth())
         self.buffer_size = buffer_size
         self.click_wav_channels = self.click_wav.getnchannels()
+        self.ready = False
         self.output_channel = output_channel
-        def click_callback(input_data, frame_count, time_info, status):
-            print(f'* click {input_data} {frame_count} {time_info} {status}')
-            data = self.click_wav.readframes(frame_count)
-            return data, pyaudio.paContinue
+        if (countin):
+            self.measures = 1
+        else:
+            self.measures = 4
+        self.start()
+    def arm_stream(self):
         print(f"Using {self.click_sound_file}:{self.click_sample_rate};{self.click_wav_channels} for metronome on {self.output_channel}; {self.click_samples} samples in click")
         self.click_stream = p.open(format=self.click_format,
                                    channels=self.click_wav_channels,
                                    rate=self.click_sample_rate,
                                    output=True,
-                                   output_device_index=output_channel,
-                                   frames_per_buffer=CHUNK,
-                                   stream_callback=click_callback)
-
+                                   output_device_index=self.output_channel,
+                                   frames_per_buffer=CHUNK)
+        self.ready = True
     def play(self, bpm, beats_per_measure, measures):
         print(f'sample width: {self.click_sample_width}')
         print(f"Playing click at {bpm} for {measures} of {beats_per_measure}")
@@ -82,6 +87,7 @@ class ClickTrack:
         loops = 0
         start_time = time.time_ns()
         start_time_seconds = time.time_ns() / (10**9)
+        self.arm_stream()
         while loops < (beats_per_measure * measures):
             self.click_play()
             time.sleep(click_delay_seconds)
@@ -89,72 +95,94 @@ class ClickTrack:
     def reset_wav(self):
         self.click_wav.rewind()
     def click_play(self):
-        self.click_stream.start_stream()
-        while(self.click_stream.is_active()):
-            time.sleep(.0001)
-            #poll for changes here? how to not waste cycles?
+        self.click_stream.write(self.click_wav.readframes(1000))
+        print('click')
         self.reset_wav()
-        self.click_stream.stop_stream()
+    def run(self):
+        self.play(120,4,self.measures)
+
+class AudioOutputTrack(Thread):
+    'Audio Track'
+    def __init__(self, output_channel=0, sample_rate=48000, track_number=1, loop=None, nloops=2):
+        super(AudioOutputTrack, self).__init__()
+        self.output_channel = output_channel
+        self.sample_rate = sample_rate
+        self.track_number = track_number
+        self.loop = loop
+        self.start()
+        self.frameGen = self.loop.frame_generator(nloops)
+    def playback_callback(self, input_data, frame_count, time_info, status):
+        #print(f'* playback {frame_count} {time_info} {status}')
+        data = next(self.frameGen)
+        return data, pyaudio.paContinue
+    def arm_stream(self):
+        self.output_stream = p.open(format=FORMAT,
+                                    channels=CHANNELS,
+                                    rate=self.sample_rate,
+                                    output_device_index=self.output_channel,
+                                    input=False,
+                                    output=True,
+                                    frames_per_buffer=CHUNK,
+                                    stream_callback=self.playback_callback)
+    def play(self, nloops=1):
+        if (not self.loop.play_ready):
+            print("Can't play; Record something first")
+        else:
+            self.arm_stream()
+            self.output_stream.start_stream()
+            while (self.output_stream.is_active()):
+                time.sleep(.001)
+            self.output_stream.stop_stream()
+    def run(self):
+        self.play(2)
 
 
-class AudioTrack:
-    'Audio Input Track'
+class AudioInputTrack(Thread):
+    'Audio Track'
     def __init__(self, input_channel=0, output_channel=0, sample_rate=48000, track_number=1):
+        super(AudioInputTrack, self).__init__()
         self.input_channel = input_channel
+        self.output_channel = output_channel
         self.sample_rate = sample_rate
         self.track_number = track_number
         self.loop = Loop(f'{self.track_number}')
         self.recording = False
-        def record_callback(input_data, frame_count, time_info, status):
-            print(f'* recording {frame_count} {time_info} {status}')
+        self.start()
+    def record_callback(self, input_data, frame_count, time_info, status):
+            #print(f'* recording {frame_count} {time_info} {status}')
             self.loop.framebuffer.append(input_data)
             return input_data, pyaudio.paContinue
+    def arm_stream(self):
         self.input_stream = p.open(format=FORMAT,
                              channels=CHANNELS,
                              rate=self.sample_rate,
                              input=True,
                              output=False,
-                             input_device_index=input_channel,
+                             input_device_index=self.input_channel,
                              frames_per_buffer=CHUNK,
-                             stream_callback=record_callback)
+                             stream_callback=self.record_callback)
     def record(self, bpm, beats_per_measure, measures):
         record_time = (60/bpm) * (beats_per_measure * measures)
         print(f"Recording for {record_time}")
         start_time = time.time_ns()
         start_time_seconds = time.time_ns() / (10**9)
+        print(f'{start_time_seconds}')
+        self.arm_stream()
         self.input_stream.start_stream()
         self.loop.disarm()
         self.recording = True
         while (self.recording):
-            time.sleep(.01)
-            self.recording = (time.time_ns() / (10**9) - start_time_seconds) < 0
+            time.sleep(.001)
+            self.recording = (time.time_ns() / (10**9) - start_time_seconds) < record_time
         self.input_stream.stop_stream()
         self.loop.ready()
         stop_time = time.time_ns()
         recorded_time = stop_time - start_time
         print(f"Done recording: {recorded_time}ns")
+    def run(self):
+        self.record(120,4,4)
 
-    def play(self, nloops=1):
-        if (not self.loop.play_ready):
-            print("Can't play; Record something first")
-        else:
-            frameGen = self.loop.frame_generator(nloops)
-            def playback_callback(input_data, frame_count, time_info, status):
-                print(f'* playback {frame_count} {time_info} {status}')
-                data = next(frameGen)
-                return data, pyaudio.paContinue
-            self.output_stream = p.open(format=FORMAT,
-                                    channels=CHANNELS,
-                                    rate=sample_rate,
-                                    output_device_index=output_channel,
-                                    input=False,
-                                    output=True,
-                                    frames_per_buffer=CHUNK,
-                                    stream_callback=playback_callback)
-            self.output_stream.start_stream()
-            while (self.output_stream.is_active()):
-                time.sleep(.001)
-            self.output_stream.stop_stream()
+    
 
 
 class Loop:
@@ -189,59 +217,74 @@ class Loop:
     def clear(self):
         self.framebuffer = 0
 
-class CloudLoop:
-    def __init__(self, configuration='macbookpro'):
-        self.session = Session(configuration)
-    def begin_session(self):
-        self.session.create_track()
-
-
-
-class Session:
-    def __init__(self, configuration='macbookpro', bpm=bpm, beats_per_measure=4, measures=2:
-        self.input_channel, self.output_channel, self.sample_rate = configure(configuration)
-        self.tracks = []
-        click_track = ClickTrack(self.output_channel)
-        self.tracks.append(click_track)
-        self.bpm = bpm
-        self.beats_per_measure = beats_per_measure
-        self.measures = measures
-        self.audio_processes = []
-    def create_track(self):
-        track_number = len(self.tracks)
-        self.tracks.append(AudioTrack(self.input_channel, self.output_channel, self.sample_rate, track_number=track_number))
-    def record_loop(self, track_number, click=True):
-        self.audio_processes.add(self.tracks[track_number].record(self.bpm, self.beats_per_measure, self.measures))
-        if (click):
-            self.audio_processes.add(self.tracks[0].play(self.bpm, self.beat_per_measure, self.measures))
-        map(lambda p: p.start(), self.audio_processes)
-        map(lambda j: j.join(), self.audio_processes)
-
-    def play_track(self, track_number, nloops=1):
-        if (track_number <= len(self.tracks)+1):
-            self.tracks[track_number].play(nloops)
-
+class Clock(Thread):
+    def __init__(self, bpm=120, num_beats=8):
+        self.start_time = time.perf_counter_ns()
+        self.beat_time_s = 60.0 / bpm
+        self.beat_time_ns = self.beat_time_s * (10**9)
+        print(f'{self.beat_time_ns} nanoseconds per beat')
+        self.num_beats = num_beats
+        self.beat_points_ns = [ (self.start_time + (self.beat_time_ns * beat)) for beat in range(num_beats+12) ]
+        print(f"Clock start {self.start_time} : {self.beat_time_s}s per beat. {self.beat_time_ns}")
+        print(f'\n\n{self.beat_points_ns}\n')
+        print(list(map(lambda x: x-self.start_time, self.beat_points_ns)))
+    async def clock_loop(self, num=0, precision=0.001, error_ns=400000, stable_error=True):
+        next_beat = self.start_time + self.beat_time_ns
+        next_beat_with_error = self.start_time + (self.beat_time_ns - error_ns)
+        sleeps = [0] * num
+        actual_errors = []
+        abs_errors = []
+        clock_errors = []
+        while len(actual_errors) < num:
+            sleeps[len(actual_errors)] += 1
+            await asyncio.sleep(precision)
+            now = time.perf_counter_ns()
+            if now > next_beat_with_error:
+                clock_error = now - next_beat_with_error
+                actual_error = now - next_beat
+                abs_error = abs(actual_error)
+                clock_errors.append(clock_error)
+                abs_errors.append(abs_error)
+                actual_errors.append(actual_error)
+                if stable_error:
+                    next_beat_with_error = (next_beat + self.beat_time_ns) - error_ns
+                else:
+                    next_beat_with_error = (next_beat + (self.beat_time_ns)) - (actual_error/2)
+                next_beat = next_beat + self.beat_time_ns
+        return (sleeps, actual_errors, clock_errors)
         
-    
+async def main():
+    input_channel, output_channel, samplerate = configure('macbookpro')
+    print('ok!')
+    results = []
+    for i in range(10):
+        clock = Clock()
+        task = asyncio.create_task(clock.clock_loop(8, 0.001, stable_error=False))
+        await task
+        results.append(task.result())
 
-input_channel, output_channel, sample_rate = configure('macbookpro')
+    final_results = []
+    for i in range(10):
+        actual_error, sleeps, clock_error = results[i]
+        average_actual_error = sum(actual_error) / len(actual_error)
+        average_sleeps = sum(sleeps) / len(sleeps)
+        average_clock_error = sum(clock_error) / len(clock_error)
+        final_results.append(average_actual_error, average_sleeps, average_clock_error)
+        print(f'\n\naverage of {i} trial: \nactual error: {average_actual_error}\nclock error(latency): {average_clock_error} \nsleeps: {average_sleeps}')
 
-audio_track = AudioTrack(input_channel=input_channel, output_channel=output_channel)
-click_track = ClickTrack(click_sound_file='metsound.wav', output_channel=output_channel)
-click_thread = multiprocessing.Process(target=click_track.play(160,4,1))
-audio_thread = multiprocessing.Process(target=audio_track.record(160,4,1))
-
-audio_thread.start()
-click_thread.start()
-click_thread.join()
-audio_thread.join()
-
-audio_playback_thread = multiprocessing.Process(target=audio_track.play(4))
-audio_playback_thread.start()
-audio_playback_thread.join()
+if __name__ == '__main__':
+    asyncio.run(main())
 
 
-#frames = loop_record(click=True, bpm=100.0, input_channel=input_channel, output_channel=output_channel, sample_rate=sample_rate)
-#loop_play(frames, cycles=4, input_channel=input_channel, output_channel=output_channel, sample_rate=sample_rate)
+"""
+click_in = ClickTrack(click_sound_file='metsound.wav', output_channel=output_channel,countin=True)
+click_in.join()
+track_1 = AudioInputTrack(input_channel, output_channel, samplerate)
+click_rec = ClickTrack(click_sound_file='metsound.wav', output_channel=output_channel, countin=False)
 
-p.terminate()
+track_1.join()
+click_rec.join()
+
+playback_track = AudioOutputTrack(output_channel=output_channel, sample_rate=samplerate, loop=track_1.loop, nloops=4)
+playback_track.join()
+"""
