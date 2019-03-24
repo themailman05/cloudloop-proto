@@ -19,7 +19,7 @@ import termios, sys
 import asyncio
 from functools import reduce
 
-CHUNK = 128
+CHUNK = 256
 FORMAT = pyaudio.paInt16
 CHANNELS = 1
 RATE = 48000
@@ -84,13 +84,19 @@ class ClickTrack():
         print(f"Playing click at {bpm} for {measures} of {beats_per_measure}")
         click_delay_seconds = 60.0/bpm
         print(f"Seconds per click: {click_delay_seconds}")
+        beats_to_play = beats_per_measure * measures
         self.arm_stream()
-        async for beat in self.clock.clock_loop(bpm=bpm, num=(beats_per_measure*measures)):
+        async for beat in self.clock.clock_loop(bpm=bpm):
             print(beat)
-            await self.click_play()
-    async def click_play(self):
-        self.click_stream.write(self.click_wav.readframes(1000))
+            self.click_play()
+            if (beat == beats_to_play):
+                self.stop()
+    def stop(self):
+        self.clock.stop()
+    def click_play(self):
+        self.click_stream.write(self.click_wav.readframes(CHUNK))
         self.click_wav.rewind()
+        return
 
 class AudioOutputTrack(Thread):
     'Audio Track'
@@ -208,39 +214,22 @@ class Loop:
 class Clock():
     def __init__(self):
         pass
-    async def clock_loop(self, bpm=120, num=8, precision=0.001, error_ns=400000, stable_error=True):
+    def stop(self):
+        self.running = False
+    async def clock_loop(self, bpm=120):
         self.start_time = time.perf_counter_ns()
         self.beat_time_s = 60.0 / bpm
         self.beat_time_ns = self.beat_time_s * (10**9)
         print(f'{self.beat_time_ns} nanoseconds per beat')
-        self.num_beats = num
         print(f"Clock start {self.start_time} : {self.beat_time_s}s per beat. {self.beat_time_ns}")
-        next_beat = self.start_time + self.beat_time_ns
-        next_beat_with_error = self.start_time + (self.beat_time_ns - error_ns)
-        sleeps = [0] * num
-        actual_errors = []
-        abs_errors = []
-        clock_errors = []
-        while len(actual_errors) < num:
-            sleeps[len(actual_errors)] += 1
-            await asyncio.sleep(precision)
-            now = time.perf_counter_ns()
-            if now > next_beat_with_error:
-                yield len(actual_errors)
-                clock_error = now - next_beat_with_error
-                actual_error = now - next_beat
-                abs_error = abs(actual_error)
-                clock_errors.append(clock_error)
-                abs_errors.append(abs_error)
-                actual_errors.append(actual_error)
-                if stable_error:
-                    next_beat_with_error = (next_beat + self.beat_time_ns) - error_ns
-                else:
-                    next_beat_with_error = (next_beat + (self.beat_time_ns)) - (actual_error/2)
-                next_beat = next_beat + self.beat_time_ns
-        return
-        #return (sleeps, actual_errors, clock_errors)
-        
+        self.beat = 1
+        self.running = True
+        while self.running:
+            await asyncio.sleep(self.beat_time_s)
+            #import pdb; pdb.set_trace()
+            yield self.beat
+            self.beat = self.beat+1
+                
 async def main():
     input_channel, output_channel, samplerate = configure('macbookpro')
     print('ok!')
@@ -248,14 +237,13 @@ async def main():
     clock = Clock()
     click_track = ClickTrack(click_sound_file='metsound.wav', output_channel=output_channel, countin=False, clock=clock)
     await click_track.play(120,4,4)
-    
+    print("done")
 
     """
     for i in range(10):
         clock = Clock()
-        task = asyncio.create_task(clock.clock_loop(8, 0.001, 400000, stable_error=False))
-        await task
-        results.append(task.result())
+        task = asyncio.create_task(clock.clock_loop(120, 8, 400000, stable_error=False))
+        await results.append(task.result())
 
     average_average_actual_errors = []
     average_average_sleeps = []
@@ -274,7 +262,8 @@ async def main():
     final_sleeps = sum(average_average_sleeps)/len(average_average_sleeps)
     final_clock_error = sum(average_average_clock_errors)/len(average_average_clock_errors)
     print(f'\nfinal actual error:{final_actual_error}\nfinal actual sleeps: {final_sleeps}\nfinal_clock_error: {final_clock_error}')
-    """
+
+"""
 if __name__ == '__main__':
     asyncio.run(main())
 
