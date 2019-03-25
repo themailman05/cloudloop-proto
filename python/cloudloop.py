@@ -79,22 +79,25 @@ class ClickTrack():
                                    output_device_index=self.output_channel,
                                    frames_per_buffer=CHUNK)
         self.ready = True
-    async def play(self, bpm, beats_per_measure, measures):
+    def play(self, bpm, beats_per_measure, measures):
         print(f'sample width: {self.click_sample_width}')
         print(f"Playing click at {bpm} for {measures} of {beats_per_measure}")
         click_delay_seconds = 60.0/bpm
         print(f"Seconds per click: {click_delay_seconds}")
         beats_to_play = beats_per_measure * measures
         self.arm_stream()
-        async for beat in self.clock.clock_loop(bpm=bpm):
-            print(beat)
+        for beat in self.clock.clock_loop(bpm=bpm):
+            #print(beat)
             self.click_play()
             if (beat == beats_to_play):
                 self.stop()
     def stop(self):
         self.clock.stop()
     def click_play(self):
-        self.click_stream.write(self.click_wav.readframes(CHUNK))
+        data = self.click_wav.readframes(CHUNK)
+        while len(data) > 0:
+            self.click_stream.write(self.click_wav.readframes(CHUNK))
+            data = self.click_wav.readframes(CHUNK)
         self.click_wav.rewind()
         return
 
@@ -216,7 +219,7 @@ class Clock():
         pass
     def stop(self):
         self.running = False
-    async def clock_loop(self, bpm=120):
+    def clock_loop(self, bpm=120):
         self.start_time = time.perf_counter_ns()
         self.beat_time_s = 60.0 / bpm
         self.beat_time_ns = self.beat_time_s * (10**9)
@@ -225,18 +228,18 @@ class Clock():
         self.beat = 1
         self.running = True
         while self.running:
-            await asyncio.sleep(self.beat_time_s)
+            time.sleep(self.beat_time_s)
             #import pdb; pdb.set_trace()
             yield self.beat
             self.beat = self.beat+1
                 
-async def main():
+def main():
     input_channel, output_channel, samplerate = configure('macbookpro')
     print('ok!')
     results = []
     clock = Clock()
     click_track = ClickTrack(click_sound_file='metsound.wav', output_channel=output_channel, countin=False, clock=clock)
-    await click_track.play(120,4,4)
+    click_track.play(120,4,4)
     print("done")
 
     """
@@ -265,7 +268,7 @@ async def main():
 
 """
 if __name__ == '__main__':
-    asyncio.run(main())
+    main()
 
 
 """
